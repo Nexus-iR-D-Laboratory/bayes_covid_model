@@ -7,6 +7,7 @@ pd.plotting.register_matplotlib_converters()  # addresses complaints about Times
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+import matplotlib.ticker as mtick
 import joblib
 from scipy.stats import norm as sp_norm
 
@@ -30,7 +31,7 @@ class Region(Enum):
 
 
 class ApproxType(Enum):
-    __order__ = 'BS LS MCMC SM PyMC3 Hess SM_acc SM_TS CF NDT_Hess NDT_Jac SP_min'
+    __order__ = 'BS LS MCMC SM PyMC3 Hess SM_acc SM_TS SP_CF NDT_Hess NDT_Jac SP_min SP_LS NUTS'
     BS = ('BS', 'bootstrap')
     LS = ('LS', 'likelihood_samples')
     MCMC = ('MCMC', 'random_walk')
@@ -39,10 +40,12 @@ class ApproxType(Enum):
     Hess = ('Hess', 'hessian')
     SM_acc = ('SM_acc', 'statsmodels_acc')
     SM_TS = ('SM_TS', 'statsmodels_time_series')
-    CF = ('CF', 'curve_fit_covariance')
+    SP_CF = ('SP_CF', 'curve_fit_covariance')
     NDT_Hess = ('NDT_Hess', 'numdifftools_hessian')
     NDT_Jac = ('NDT_Jac', 'numdifftools_jacobian')
     SP_min = ('SP_min', 'scipy_minimize')
+    SP_LS = ('SP_LS', 'scipy_least_squares')
+    NUTS = ('NUTS', 'no_u_turn_random_walk')
 
     def __str__(self):
         return str(self.value)
@@ -59,6 +62,23 @@ class Stopwatch:
     def reset(self):
         self.time0 = get_time()
 
+
+# def render_whisker_plot_split(state_report,
+#                                    plot_param_name='alpha_2',
+#                                    output_filename_format_str='test_boxplot_for_{}_{}.png',
+#                                    opt_log=False,
+#                                    boxwidth=0.7,
+#                                    approx_types=[('SM', 'statsmodels')]):
+#     
+#     state_split = state_report['']
+#     for page in range(n_pages):
+#         if plot_param_name
+#         render_whisker_plot_simplified(state_report,
+#                                        plot_param_name='alpha_2',
+#                                        output_filename_format_str=output_filename_format_str.replace('.png', f'_page_{page}_of_{n_pages}.png'),
+#                                        opt_log=opt_log,
+#                                        boxwidth=boxwidth,
+#                                        approx_types=approx_types)
 
 def render_whisker_plot_simplified(state_report,
                                    plot_param_name='alpha_2',
@@ -82,6 +102,9 @@ def render_whisker_plot_simplified(state_report,
     small_state_report = state_report.iloc[tmp_ind]
     small_state_report.to_csv('simplified_state_report_{}.csv'.format(plot_param_name))
 
+    if ApproxType.SM_TS in approx_types:
+        approx_types.remove(ApproxType.SM_TS)
+
     for approx_type in approx_types:
         try:
             param_name_abbr, param_name = approx_type.value
@@ -94,6 +117,9 @@ def render_whisker_plot_simplified(state_report,
         except:
             pass
 
+    def convert_growth_rate_to_perc(x):
+        return np.exp(x) - 1
+
     map_approx_type_to_boxes = dict()
     for approx_type in approx_types:
         try:
@@ -104,11 +130,11 @@ def render_whisker_plot_simplified(state_report,
                 new_box = \
                     {
                         'label': approx_type.value[1],
-                        'whislo': row[f'{param_name_abbr}_p5'].values[0],  # Bottom whisker position
-                        'q1': row[f'{param_name_abbr}_p25'].values[0],  # First quartile (25th percentile)
-                        'med': row[f'{param_name_abbr}_p50'].values[0],  # Median         (50th percentile)
-                        'q3': row[f'{param_name_abbr}_p75'].values[0],  # Third quartile (75th percentile)
-                        'whishi': row[f'{param_name_abbr}_p95'].values[0],  # Top whisker position
+                        'whislo': convert_growth_rate_to_perc(row[f'{param_name_abbr}_p5'].values[0]),  # Bottom whisker position
+                        'q1': convert_growth_rate_to_perc(row[f'{param_name_abbr}_p25'].values[0]),  # First quartile (25th percentile)
+                        'med': convert_growth_rate_to_perc(row[f'{param_name_abbr}_p50'].values[0]),  # Median         (50th percentile)
+                        'q3': convert_growth_rate_to_perc(row[f'{param_name_abbr}_p75'].values[0]),  # Third quartile (75th percentile)
+                        'whishi': convert_growth_rate_to_perc(row[f'{param_name_abbr}_p95'].values[0]),  # Top whisker position
                         'fliers': []  # Outliers
                     }
                 tmp_list.append(new_box)
@@ -147,6 +173,8 @@ def render_whisker_plot_simplified(state_report,
 
     plt.yticks(range(1, len(setup_boxes) * (n_groups + 1), (n_groups + 1)), small_state_report['state'])
 
+    ax.xaxis.set_major_formatter(mtick.PercentFormatter(xmax=1, decimals=2))
+
     # fill with colors
     colors = ['blue', 'red', 'green', 'purple', 'orange', 'brown', 'navy', 'teal', 'orchid', 'tan']
     for approx_type, color in zip(sorted(map_approx_type_to_ax), colors):
@@ -175,6 +203,12 @@ def render_whisker_plot_simplified(state_report,
     plt.subplots_adjust(left=0.2)
     if opt_log:
         plt.xscale('log')
+    
+    if 'slope' in plot_param_name and ApproxType.SM_acc not in approx_types:
+        plt.xlabel('Daily Relative Growth Rate')
+    elif 'slope' in plot_param_name and ApproxType.SM_acc in approx_types:
+        plt.xlabel('Absolute Week-over-Week Change in Daily Relative Growth Rate')
+        
     plt.savefig(output_filename, dpi=300)
     # plt.boxplot(small_state_report['state'], small_state_report[['BS_p5', 'BS_p95']])
 
@@ -183,6 +217,7 @@ def generate_state_prediction(map_state_name_to_model,
                               override_max_date_str,
                               prediction_filename=None,
                               n_samples=1000):
+    
     max_date = datetime.datetime.strptime(override_max_date_str, '%Y-%m-%d')
     all_predictions = list()
     for state_ind, state in enumerate(map_state_name_to_model):
@@ -192,15 +227,17 @@ def generate_state_prediction(map_state_name_to_model,
         else:
             print(f'Skipping {state}!')
             continue
-
+        
+        print(f'Running predictions on {state} ({state_ind} of {len(map_state_name_to_model)})')
         if state_model is not None:
 
             for approx_type in state_model.model_approx_types:
 
                 if approx_type == ApproxType.SM or approx_type == ApproxType.SM_acc or approx_type == ApproxType.SM_TS:
-                    params, _, _, log_probs = state_model.get_weighted_samples_via_statsmodels()
+                    params, _, _, log_probs = state_model.get_weighted_samples_via_statsmodels(n_samples=200)
                 elif approx_type == ApproxType.PyMC3:
-                    params, _, _, log_probs = state_model.get_weighted_samples_via_PyMC3()
+                    params, _, _, log_probs = state_model.get_weighted_samples_via_PyMC3(n_samples=200)
+                    
                 print(approx_type)
                 param_inds_to_plot = list(range(len(params)))
                 param_inds_to_plot = np.random.choice(param_inds_to_plot, min(n_samples, len(param_inds_to_plot)),
@@ -219,10 +256,10 @@ def generate_state_prediction(map_state_name_to_model,
                 sols_to_plot_tested = list()
                 sols_to_plot_dead = list()
                 for sol in sols_to_plot:
-                    tested =  [max(sol[1][i] - state_model.log_offset, 0) for i in range(len(sol[1]))]
+                    tested = [max(sol[1][i] - state_model.log_offset, 0) for i in range(len(sol[1]))]
                     tested_range = np.cumsum(tested[start_ind_sol:])
 
-                    dead =  [max(sol[1][i] - state_model.log_offset, 0) for i in range(len(sol[1]))]
+                    dead = [max(sol[1][i] - state_model.log_offset, 0) for i in range(len(sol[1]))]
                     dead_range = np.cumsum(dead[start_ind_sol:])
 
                     sols_to_plot_new_tested.append(tested)
@@ -301,7 +338,10 @@ def generate_state_prediction(map_state_name_to_model,
 
 def generate_state_report(map_state_name_to_model,
                           state_report_filename=None,
-                          report_names=None):
+                          report_names=None,
+                          opt_save_to_csv=True,
+                          offset=0):
+    
     state_report_as_list_of_dicts = list()
     for state_ind, state in enumerate(map_state_name_to_model):
 
@@ -321,11 +361,19 @@ def generate_state_report(map_state_name_to_model,
             except:
                 LS_params = [0]
 
-            try:
-                SM_params, _, _, _ = state_model.get_weighted_samples_via_statsmodels()
-            except:
-                SM_params = [0]
+            # try:
+            #     SM_params, _, _, _ = state_model.get_weighted_samples_via_statsmodels()
+            # except:
+            #     SM_params = [0]
 
+            try:
+                positive_names = [name for name in state_model.sorted_names if 'positive' in name and 'sigma' not in name]
+                map_name_to_sorted_ind_positive = {val: i for i, val in enumerate(positive_names)}
+                deceased_names = [name for name in state_model.sorted_names if 'deceased' in name and 'sigma' not in name]
+                map_name_to_sorted_ind_deceased = {val: i for i, val in enumerate(deceased_names)}
+            except:
+                pass 
+            
             try:
                 SM_acc_params = state_model.map_param_to_acc
             except:
@@ -334,7 +382,8 @@ def generate_state_report(map_state_name_to_model,
             approx_type_params = dict()
             for approx_type in state_model.map_approx_type_to_model:
                 if True:
-                    approx_type_params[approx_type], _, _, _ = state_model.get_weighted_samples_via_model(approx_type=approx_type)
+                    approx_type_params[approx_type], _, _, _ = state_model.get_weighted_samples_via_model(
+                        approx_type=approx_type, offset=offset)
                 else:
                     approx_type_params[approx_type] = [0]
 
@@ -356,19 +405,23 @@ def generate_state_report(map_state_name_to_model,
                     except:
                         pass
 
+                    
                     approx_type_vals = dict()
                     for approx_type in state_model.map_approx_type_to_model:
                         try:
-                            approx_type_vals[approx_type] = [approx_type_params[approx_type][i][state_model.map_name_to_sorted_ind[param_name]] for i in
-                                         range(len(approx_type_params[approx_type]))]
+                            approx_type_vals[approx_type] = [
+                                approx_type_params[approx_type][i][state_model.map_name_to_sorted_ind[param_name]] for i
+                                in
+                                range(len(approx_type_params[approx_type]))]
                         except:
                             pass
+                        
 
-                    try:
-                        SM_vals = [SM_params[i][state_model.map_name_to_sorted_ind[param_name]] for i in
-                                   range(len(SM_params))]
-                    except:
-                        pass
+                    # try:
+                    #     SM_vals = [SM_params[i][state_model.map_name_to_sorted_ind[param_name]] for i in
+                    #                range(len(SM_params))]
+                    # except:
+                    #     pass
 
                     try:
                         PyMC3_vals = [PyMC3_params[i][state_model.map_name_to_sorted_ind[param_name]] for i in
@@ -397,20 +450,21 @@ def generate_state_report(map_state_name_to_model,
                     except:
                         pass
 
-                    try:
-                        SM_vals = [state_model.extra_params[param_name](SM_params[i]) for i
-                                   in range(len(SM_params))]
-                    except:
-                        pass
+                    # try:
+                    #     SM_vals = [state_model.extra_params[param_name](SM_params[i]) for i
+                    #                in range(len(SM_params))]
+                    # except:
+                    #     pass
 
                     approx_type_vals = dict()
                     for approx_type in state_model.map_approx_type_to_model:
                         try:
-                            approx_type_vals[approx_type] = [state_model.extra_params[param_name](approx_type_params[approx_type][i]) for i
-                                         in range(len(approx_type_params[approx_type]))]
+                            approx_type_vals[approx_type] = [
+                                state_model.extra_params[param_name](approx_type_params[approx_type][i]) for i
+                                in range(len(approx_type_params[approx_type]))]
                         except:
                             pass
-                    
+
                     try:
                         PyMC3_vals = [
                             state_model.extra_params[param_name](state_model.extra_params[param_name](PyMC3_params[i]))
@@ -434,22 +488,18 @@ def generate_state_report(map_state_name_to_model,
                     offset = SM_acc_params[param_name]['offset']
                     SM_acc_mean = SM_acc_params[param_name]['slope2'] - SM_acc_params[param_name]['slope1']
                     SM_acc_std_err = np.sqrt(
-                            SM_acc_params[param_name]['bse1'] ** 2 + SM_acc_params[param_name]['bse2'] ** 2)
-                    SM_acc_vals = sp_norm(loc=SM_acc_mean, scale=SM_acc_std_err).rvs(1000)
+                        SM_acc_params[param_name]['bse1'] ** 2 + SM_acc_params[param_name]['bse2'] ** 2)
+                    SM_acc_model = sp_norm(loc=SM_acc_mean, scale=SM_acc_std_err)
 
                     dict_to_add.update({
-                        'statsmodels_acc_mean': np.average(SM_acc_vals),
-                        'statsmodels_acc_std_err': np.std(SM_acc_vals),
-                        'statsmodels_acc_fwhm': np.std(SM_acc_vals) * 2.355,
-                        'statsmodels_acc_p50': np.percentile(SM_acc_vals, 50),
-                        'statsmodels_acc_p5':
-                            np.percentile(SM_acc_vals, 5),
-                        'statsmodels_acc_p95':
-                            np.percentile(SM_acc_vals, 95),
-                        'statsmodels_acc_p25':
-                            np.percentile(SM_acc_vals, 25),
-                        'statsmodels_acc_p75':
-                            np.percentile(SM_acc_vals, 75)
+                        'statsmodels_acc_mean': SM_acc_mean,
+                        'statsmodels_acc_std_err': SM_acc_std_err,
+                        'statsmodels_acc_fwhm': SM_acc_std_err * 2.355,
+                        'statsmodels_acc_p50': SM_acc_model.ppf(0.5),
+                        'statsmodels_acc_p5': SM_acc_model.ppf(0.05),
+                        'statsmodels_acc_p95': SM_acc_model.ppf(0.95),
+                        'statsmodels_acc_p25': SM_acc_model.ppf(0.25),
+                        'statsmodels_acc_p75': SM_acc_model.ppf(0.75),
                     })
 
                     dict_to_add.update({
@@ -504,23 +554,44 @@ def generate_state_report(map_state_name_to_model,
                     })
                 except:
                     pass
-                try:
-                    dict_to_add.update({
-                        'statsmodels_mean': np.average(SM_vals),
-                        'statsmodels_std_err': np.std(SM_vals),
-                        'statsmodels_fwhm': np.std(SM_vals) * 2.355,
-                        'statsmodels_p50': np.percentile(SM_vals, 50),
-                        'statsmodels_p5':
-                            np.percentile(SM_vals, 5),
-                        'statsmodels_p95':
-                            np.percentile(SM_vals, 95),
-                        'statsmodels_p25':
-                            np.percentile(SM_vals, 25),
-                        'statsmodels_p75':
-                            np.percentile(SM_vals, 75)
-                    })
-                except:
+
+                if hasattr(state_model, 'map_param_name_to_statsmodels_norm_model'):
+                    if param_name in state_model.map_param_name_to_statsmodels_norm_model:
+                        use_model = state_model.map_param_name_to_statsmodels_norm_model[param_name]
+                        dict_to_add.update({
+                            'statsmodels_mean': use_model.mean(),
+                            'statsmodels_std_err': use_model.std(),
+                            'statsmodels_fwhm': use_model.std() * 2.355,
+                            'statsmodels_p50': use_model.ppf(0.5),
+                            'statsmodels_p5': use_model.ppf(0.05),
+                            'statsmodels_p95': use_model.ppf(0.95),
+                            'statsmodels_p25': use_model.ppf(0.25),
+                            'statsmodels_p75': use_model.ppf(0.75)
+                        })
+                    else:
+                        pass
+                    
+                else:
                     pass
+
+                # 
+                # try:
+                #     dict_to_add.update({
+                #         'statsmodels_mean': np.average(SM_vals),
+                #         'statsmodels_std_err': np.std(SM_vals),
+                #         'statsmodels_fwhm': np.std(SM_vals) * 2.355,
+                #         'statsmodels_p50': np.percentile(SM_vals, 50),
+                #         'statsmodels_p5':
+                #             np.percentile(SM_vals, 5),
+                #         'statsmodels_p95':
+                #             np.percentile(SM_vals, 95),
+                #         'statsmodels_p25':
+                #             np.percentile(SM_vals, 25),
+                #         'statsmodels_p75':
+                #             np.percentile(SM_vals, 75)
+                #     })
+                # except:
+                #     pass
 
                 for approx_type in approx_type_vals:
                     try:
@@ -560,14 +631,18 @@ def generate_state_report(map_state_name_to_model,
                 state_report_as_list_of_dicts.append(dict_to_add)
 
     state_report = pd.DataFrame(state_report_as_list_of_dicts)
-    print('Saving state report to {}...'.format(state_report_filename))
-    joblib.dump(state_report, state_report_filename)
-    print('...done!')
-    print('Saving state report to {}...'.format(state_report_filename.replace('joblib', 'csv')))
-    joblib.dump(state_report.to_csv(), state_report_filename.replace('joblib', 'csv'))
-    print('...done!')
+    
+    if opt_save_to_csv and offset==0:
+        print('Saving state report to {}...'.format(state_report_filename))
+        joblib.dump(state_report, state_report_filename)
+        print('...done!')
+        print('Saving state report to {}...'.format(state_report_filename.replace('joblib', 'csv')))
+        joblib.dump(state_report.to_csv(), state_report_filename.replace('joblib', 'csv'))
+        print('...done!')
+    elif opt_save_to_csv:
+        joblib.dump(state_report.to_csv(), state_report_filename.replace('joblib', 'csv'))
+    
     n_states = len(set(state_report['state']))
-    print(n_states)
 
     new_cols = list()
     for col in state_report.columns:
@@ -593,6 +668,7 @@ def run_everything(run_states,
                    logarithmic_params=list(),
                    plot_param_names=None,
                    opt_simplified=False,
+                   opt_report=True,
                    **kwargs):
     # setting intermediate variables to global allows us to inspect these objects via monkey-patching
     global map_state_name_to_model, state_report
@@ -600,67 +676,79 @@ def run_everything(run_states,
     map_state_name_to_model = dict()
 
     for state_ind, state in enumerate(run_states):
+
         if state not in load_data.map_state_to_current_case_cnt:
-            continue
-        print(
-            f'\n----\n----\nProcessing {state} ({state_ind} of {len(run_states)}, current cases {load_data.map_state_to_current_case_cnt[state]:,})...\n----\n----\n')
-
-        if True:
-            print('Building model with the following args...')
-            for key in sorted(kwargs.keys()):
-                print(f'{key}: {kwargs[key]}')
-            state_model = model_class(state,
-                                      sorted_init_condit_names=sorted_init_condit_names,
-                                      sorted_param_names=sorted_param_names,
-                                      extra_params=extra_params,
-                                      logarithmic_params=logarithmic_params,
-                                      plot_param_names=plot_param_names,
-                                      opt_simplified=opt_simplified,
-                                      override_max_date_str=override_max_date_str,
-                                      **kwargs
-                                      )
-            if opt_simplified:
-                state_model.run_fits_simplified()
-            else:
-                state_model.run_fits()
-            map_state_name_to_model[state] = state_model
-
+            print(f'{state} not in load_data.map_state_to_current_case_cnt')
+            # print('\n'.join(sorted(load_data.map_state_to_current_case_cnt.keys())))
         else:
-            print("Error with state", state)
+            print(
+                f'\n----\n----\nProcessing {state} ({state_ind} of {len(run_states)}, current cases {load_data.map_state_to_current_case_cnt[state]:,})...\n----\n----\n')
+            try:
+                print('Building model with the following args...')
+                for key in sorted(kwargs.keys()):
+                    print(f'{key}: {kwargs[key]}')
+                state_model = model_class(state,
+                                          sorted_init_condit_names=sorted_init_condit_names,
+                                          sorted_param_names=sorted_param_names,
+                                          extra_params=extra_params,
+                                          logarithmic_params=logarithmic_params,
+                                          plot_param_names=plot_param_names,
+                                          opt_simplified=opt_simplified,
+                                          override_max_date_str=override_max_date_str,
+                                          **kwargs
+                                          )
+                if opt_simplified:
+                    state_model.run_fits_simplified()
+                else:
+                    state_model.run_fits()
+                map_state_name_to_model[state] = state_model
+    
+            except:
+                print("Error getting model for state", state)
+    
+            plot_subfolder = state_model.plot_subfolder
+
+        if not opt_report:
             continue
-
-        plot_subfolder = state_model.plot_subfolder
-
+            
         if opt_simplified:
             state_report_filename = path.join(plot_subfolder, f'simplified_state_report.joblib')
             state_prediction_filename = path.join(plot_subfolder, f'simplified_state_prediction.joblib')
             filename_format_str = path.join(plot_subfolder, f'simplified_boxplot_for_{{}}_{{}}.png')
-            if state_ind in [0, 1, 4, 9, 100] or state_ind == len(run_states) - 1:
-                print('Reporting now and at the end')
+            if state_ind in [0, 4, 49, 499, 999, 1999, 2999] or state_ind > len(run_states) - 2:
+                print(f'Reporting at index {state_ind} and at the end')
                 state_report = generate_state_report(map_state_name_to_model,
                                                      state_report_filename=state_report_filename,
                                                      report_names=plot_param_names)
-                _ = generate_state_prediction(map_state_name_to_model,
-                                              override_max_date_str,
-                                              prediction_filename=state_prediction_filename)
+                print(f'Rendering reports for 3 months...')
+                max_offset = 3*28
+                for offset in tqdm(range(max_offset)):
+                    state_report_filename = path.join(plot_subfolder, f'simplified_state_report_offset_{offset:03d}_of_{max_offset:03d}.joblib')
+                    _ = generate_state_report(map_state_name_to_model,
+                                                     state_report_filename=state_report_filename,
+                                                     report_names=plot_param_names,
+                                                     offset=offset)
+                if state_model.opt_plot:
+                    _ = generate_state_prediction(map_state_name_to_model,
+                                                  override_max_date_str,
+                                                  prediction_filename=state_prediction_filename)
                 for param_name in state_model.plot_param_names:
-                    render_whisker_plot_simplified(state_report,
-                                                   plot_param_name=param_name,
-                                                   output_filename_format_str=filename_format_str,
-                                                   opt_log=param_name in logarithmic_params,
-                                                   approx_types=state_model.model_approx_types)
-                    if ApproxType.SM in state_model.model_approx_types:
+                    if len(set(state_report['state'])) <= 65 and state_model.opt_plot:
                         render_whisker_plot_simplified(state_report,
                                                        plot_param_name=param_name,
                                                        output_filename_format_str=filename_format_str,
                                                        opt_log=param_name in logarithmic_params,
-                                                       approx_types=[ApproxType.SM_acc])
-                    else:
-                        pass
+                                                       approx_types=state_model.model_approx_types)
+                        if ApproxType.SM in state_model.model_approx_types:
+                            render_whisker_plot_simplified(state_report,
+                                                           plot_param_name=param_name,
+                                                           output_filename_format_str=filename_format_str,
+                                                           opt_log=param_name in logarithmic_params,
+                                                           approx_types=[ApproxType.SM_acc])
         else:
             state_report_filename = path.join(plot_subfolder, 'state_report.csv')
             filename_format_str = path.join(plot_subfolder, 'boxplot_for_{}_{}.png')
-            if state_ind in [0, 1, 4, 9, 100] or state_ind == len(run_states) - 1:
+            if state_ind in [0, 1, 4, 9, 19, 49] or state_ind == len(run_states) - 1:
                 print('Reporting now and at the end')
                 state_report = generate_state_report(map_state_name_to_model,
                                                      state_report_filename=state_report_filename)
@@ -686,6 +774,12 @@ def generate_plot_browser(plot_browser_dir, base_url_dir, github_url, full_repor
     map_state_to_html = dict()
     for state in alphabetical_states:
 
+        if state.lower().startswith('us:_'):
+            print_state = state[4:]
+        else:
+            print_state = state
+        print_state = print_state.title().replace('_', ' ').replace(' Of', ' of')
+
         state_lc = state.lower().replace(' ', '_')
         doc, tag, text = Doc(defaults={'title': f'Plots for {state}'}).tagtext()
 
@@ -695,6 +789,8 @@ def generate_plot_browser(plot_browser_dir, base_url_dir, github_url, full_repor
                 pass
             with tag('body'):
                 with tag('div', id='photo-container'):
+                    with tag('h2'):
+                        text(print_state)
                     with tag('ul'):
                         with tag('li'):
                             with tag('a', href='../index.html'):
@@ -713,7 +809,7 @@ def generate_plot_browser(plot_browser_dir, base_url_dir, github_url, full_repor
         map_state_to_html[state] = result
 
     for state in map_state_to_html:
-        state_lc = state.lower().replace(' ', '_').replace(':','')
+        state_lc = state.lower().replace(' ', '_').replace(':', '')
         if not path.exists(path.join(plot_browser_dir, state_lc)):
             os.mkdir(path.join(plot_browser_dir, state_lc))
         with open(path.join(plot_browser_dir, path.join(state_lc, 'index.html')), 'w') as f:
@@ -766,14 +862,99 @@ def generate_plot_browser(plot_browser_dir, base_url_dir, github_url, full_repor
                         with tag("a", href=full_report_filename):
                             text(f'Full Report')
                     for state in alphabetical_states:
-                        state_lc = state.lower().replace(' ', '_').replace(':', '')
-                        tmp_url = state_lc + '/index.html'
+
                         if state.lower().startswith('us:_'):
                             print_state = state[4:]
                         else:
                             print_state = state
                         print_state = print_state.title().replace('_', ' ').replace(' Of', ' of')
+
+                        state_lc = state.lower().replace(' ', '_').replace(':', '')
+                        tmp_url = state_lc + '/index.html'
                         with tag('li'):
                             with tag("a", href=tmp_url):
                                 text(print_state)
         f.write(doc.getvalue())
+
+
+def print_and_write(x, filename='scratch.txt', mode='a', reset=None):
+    if reset is not None:
+        if reset:
+            mode = 'w'
+        else:
+            mode = 'a'
+    with open(filename, mode) as f:
+        f.write(x)
+    print(x)
+
+
+us_state_abbrev = {
+    'Alabama': 'AL',
+    'Alaska': 'AK',
+    'American Samoa': 'AS',
+    'Arizona': 'AZ',
+    'Arkansas': 'AR',
+    'California': 'CA',
+    'Colorado': 'CO',
+    'Connecticut': 'CT',
+    'Delaware': 'DE',
+    'District of Columbia': 'DC',
+    'Florida': 'FL',
+    'Georgia': 'GA',
+    'Guam': 'GU',
+    'Hawaii': 'HI',
+    'Idaho': 'ID',
+    'Illinois': 'IL',
+    'Indiana': 'IN',
+    'Iowa': 'IA',
+    'Kansas': 'KS',
+    'Kentucky': 'KY',
+    'Louisiana': 'LA',
+    'Maine': 'ME',
+    'Maryland': 'MD',
+    'Massachusetts': 'MA',
+    'Michigan': 'MI',
+    'Minnesota': 'MN',
+    'Mississippi': 'MS',
+    'Missouri': 'MO',
+    'Montana': 'MT',
+    'Nebraska': 'NE',
+    'Nevada': 'NV',
+    'New Hampshire': 'NH',
+    'New Jersey': 'NJ',
+    'New Mexico': 'NM',
+    'New York': 'NY',
+    'North Carolina': 'NC',
+    'North Dakota': 'ND',
+    'Northern Mariana Islands':'MP',
+    'Ohio': 'OH',
+    'Oklahoma': 'OK',
+    'Oregon': 'OR',
+    'Pennsylvania': 'PA',
+    'Puerto Rico': 'PR',
+    'Rhode Island': 'RI',
+    'South Carolina': 'SC',
+    'South Dakota': 'SD',
+    'Tennessee': 'TN',
+    'Texas': 'TX',
+    'Utah': 'UT',
+    'Vermont': 'VT',
+    'Virgin Islands': 'VI',
+    'Virginia': 'VA',
+    'Washington': 'WA',
+    'West Virginia': 'WV',
+    'Wisconsin': 'WI',
+    'Wyoming': 'WY'
+}
+
+state_codes = {
+    'WA': '53', 'DE': '10', 'DC': '11', 'WI': '55', 'WV': '54', 'HI': '15',
+    'FL': '12', 'WY': '56', 'PR': '72', 'NJ': '34', 'NM': '35', 'TX': '48',
+    'LA': '22', 'NC': '37', 'ND': '38', 'NE': '31', 'TN': '47', 'NY': '36',
+    'PA': '42', 'AK': '02', 'NV': '32', 'NH': '33', 'VA': '51', 'CO': '08',
+    'CA': '06', 'AL': '01', 'AR': '05', 'VT': '50', 'IL': '17', 'GA': '13',
+    'IN': '18', 'IA': '19', 'MA': '25', 'AZ': '04', 'ID': '16', 'CT': '09',
+    'ME': '23', 'MD': '24', 'OK': '40', 'OH': '39', 'UT': '49', 'MO': '29',
+    'MN': '27', 'MI': '26', 'RI': '44', 'KS': '20', 'MT': '30', 'MS': '28',
+    'SC': '45', 'KY': '21', 'OR': '41', 'SD': '46'
+}
