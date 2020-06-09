@@ -1,46 +1,21 @@
 import os
+import shutil 
 import requests
-from sub_units.bayes_model import ApproxType
-from sub_units.utils import Region
 import glob
 import logging
 import boto3
 from botocore.exceptions import ClientError
 from tqdm import tqdm
 import datetime
+from sub_units.utils import Region
+from sub_units import post_analysis
+from sub_units import github_readme_components
+from sub_units.utils import print_and_write
 
-'''
-* Download the latest data to a local directory using curl https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-states.csv
-* Update covid_moving_window.py to today's max_date_str (maybe I should set this up as argparse)
-* Execute "import covid_moving_window as x; x.opt_simplified=True #monkey-patching; x.run_everything()"
-* Upload the resulting directory (hyperparameter string) added to directory state_plots to AWS
-* Re-run generate_plot_browser_moving_window_statsmodels_only.py with the updated hyperparameter string
-* Push updated plot_browser_moving_window_statsmodels_only directory to GitHub
-'''
-
-
-def upload_file(file_name, bucket, object_name=None):
-    """Upload a file to an S3 bucket
-
-    :param file_name: File to upload
-    :param bucket: Bucket to upload to
-    :param object_name: S3 object name. If not specified then file_name is used
-    :return: True if file was uploaded, else False
-    """
-
-    # If S3 object_name was not specified, use file_name
-    if object_name is None:
-        object_name = file_name
-
-    # Upload the file
-    s3_client = boto3.client('s3')
-    try:
-        response = s3_client.upload_file(file_name, bucket, object_name)
-    except ClientError as e:
-        logging.error(e)
-        return False
-    return True
-
+# TODO: re-implement sucking data from the internet by checking for all days
+#   and sucking only what it needs and put that in the load_data module
+#   so it automatically happens whenever you load the data, rather
+#   than having to manually do it here.
 
 #####
 # Step 1a: Update counts data
@@ -49,15 +24,12 @@ def upload_file(file_name, bucket, object_name=None):
 url = "https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-states.csv"
 r = requests.get(url, allow_redirects=True)
 with open('source_data/states.csv', 'w') as f:
-    f.write(r.content.decode("utf-8") )
+    f.write(r.content.decode("utf-8"))
 
 url = "https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-counties.csv"
 r = requests.get(url, allow_redirects=True)
 with open('source_data/counties.csv', 'w') as f:
-    f.write(r.content.decode("utf-8") )
-
-# # from https://github.com/CSSEGISandData/COVID-19/tree/master/csse_covid_19_data/csse_covid_19_daily_reports
-
+    f.write(r.content.decode("utf-8"))
 
 print('Downloading last week of data')
 for days_back in tqdm(range(0, 7)):
@@ -74,6 +46,7 @@ for days_back in tqdm(range(0, 7)):
 # Step 1b: Update load_data (this happens as soon as you import modules that use load_data)
 #####
 
+import datetime
 import covid_moving_window as covid
 
 #####
@@ -91,52 +64,147 @@ covid.override_max_date_str = yesterdays_date_str
 covid.opt_force_calc = False
 covid.opt_force_plot = False
 covid.opt_simplified = True  # set to True to just do statsmodels as a simplified daily service
-covid.override_run_states = None # ['Spain', 'Iceland']#covid.load_data.current_cases_ranked_non_us_states[:50] # if you want to do countries instead
+
+####
+# Step 2a: do deep-dive run on top regions by current case count
+####
+
+covid.opt_plot = True
+covid.opt_truncate = True
+covid.opt_report = True
+covid.override_region = None
+covid.override_run_states = None
+
+_ = covid.run_everything()
+
+####
+# Step 2b: do run on all regions, but only produce parameters...
+####
+
+covid.opt_plot = False
+covid.opt_truncate = False
+covid.opt_report = True
+covid.override_region = None
+covid.override_run_states = None
 
 region_plot_subfolders = covid.run_everything()
+
+print('region_plot_subfolders:')
+print(region_plot_subfolders)
+
+####
+# Step 2c: post-process parameters to identify which regions to deep-dive into
+####
+
+post_analysis.hyperparameter_strings = list(region_plot_subfolders.values())
+
+from sub_units import post_analysis
+
+post_analysis.post_process_state_reports(opt_acc=True)
+
+# re-run and produce all the plots for the top outbreak-y counties
+covid.opt_plot = True
+covid.opt_report = False
+covid.override_region = Region.US_counties
+covid.override_run_states = list()
+
+with open(post_analysis.scratchpad_filename, 'r') as f:
+    for line in f.readlines():
+        covid.override_run_states.append(line.strip())
+
+region_plot_subfolders = covid.run_everything()
+
+####
+# Step 2d: post-process parameters to identify which regions to deep-dive into
+####
+
+from sub_units import post_analysis
+
+post_analysis.post_process_state_reports(opt_acc=False)
+
+# re-run and produce all the plots for the top outbreak-y counties
+covid.opt_plot = True
+covid.opt_report = False
+covid.override_region = Region.US_counties
+covid.override_run_states = list()
+
+with open(post_analysis.scratchpad_filename, 'r') as f:
+    for line in f.readlines():
+        covid.override_run_states.append(line.strip())
+
+region_plot_subfolders = covid.run_everything()
+
+# TODO: Make update to README automatic
+
+#####
+# Step 2e: Re-do post-analysis and write to github table file
+#####
+
+from sub_units import post_analysis
+from sub_units import github_readme_components
+from sub_units.utils import print_and_write
+import shutil 
+
+post_analysis.post_process_state_reports(opt_acc=False, opt_reset_tables_file=True)
+post_analysis.post_process_state_reports(opt_acc=True)
+print_and_write(github_readme_components.get_all(github_table_filename=post_analysis.github_table_filename),
+                filename='github_README.txt', reset=True)
+
+
+shutil.copyfile('github_README.txt', 'README.md')
+
+
+# TODO: Copy 'github_README.txt' to 'README.md'
 
 #####
 # Step 3: Upload Figures to AWS
 #####
 
-for region, plot_subfolder in region_plot_subfolders.items():
-    hyperparamater_str = os.path.basename(os.path.normpath(plot_subfolder))
-    print(hyperparamater_str)
+# {<Region.US_counties: 'US_counties'>: 'state_plots/2020_06_02_date_smoothed_moving_window_21_days_US_counties_region_statsmodels', <Region.countries: 'countries'>: 'state_plots/2020_06_02_date_smoothed_moving_window_21_days_countries_region_statsmodels', <Region.US_states: 'US_states'>: 'state_plots/2020_06_02_date_smoothed_moving_window_21_days_US_states_region_statsmodels'}
 
-    first_level_files = glob.glob(plot_subfolder + '/*.*', recursive=True)
-    second_level_files = glob.glob(plot_subfolder + '/*/*.*', recursive=True)
-    files = first_level_files + second_level_files
-
-    # TODO: This is really inefficient -- takes 20-30 minutes! Mainly issue is that 
-    #   `aws s3 cp --recursive ...` uses parallel threads, and this is a serial upload
-    for file in tqdm(list(files)):
-        relative_filename = '/'.join(file.split('/')[1:])
-        print(f'Uploading {relative_filename}...')
-        upload_file(file, 'covid-figures', object_name=relative_filename)
+# run in bash...
+# TODO: get these bash scripts to run from Python
+# HYP_STR=2020_06_02_date_smoothed_moving_window_21_days_countries_region_statsmodels; aws s3 cp --recursive state_plots/$HYP_STR s3://covid-figures/$HYP_STR/
+# HYP_STR=2020_06_02_date_smoothed_moving_window_21_days_US_states_region_statsmodels; aws s3 cp --recursive state_plots/$HYP_STR s3://covid-figures/$HYP_STR/
+# HYP_STR=2020_06_02_date_smoothed_moving_window_21_days_US_counties_region_statsmodels; aws s3 cp --recursive state_plots/$HYP_STR s3://covid-figures/$HYP_STR/
+# # HYP_STR=2020_06_02_date_smoothed_moving_window_21_days_provinces_region_statsmodels; aws s3 cp --recursive state_plots/$HYP_STR s3://covid-figures/$HYP_STR/
 
 
 ######
-# Step 5: Generate Figure Browser
+# Step 3: Generate Figure Browser
 ######
 
 import os
 from sub_units.utils import Region
 import generate_plot_browser_moving_window_statsmodels_only as generate_figure_browser
 
-region_plot_subfolders = {Region.US_states: 'state_plots/2020_05_25_date_smoothed_moving_window_21_days_US_states_region_statsmodels',
- Region.countries: 'state_plots/2020_05_25_date_smoothed_moving_window_21_days_countries_region_statsmodels'}
+opt_file_check = False  # change to False after run on server
 
-
-# import importlib
-# importlib.reload(generate_figure_browser)
+region_plot_subfolders = {
+    # Region.provinces: 'state_plots/2020_05_02_date_smoothed_moving_window_21_days_provinces_region_statsmodels',
+    Region.countries: 'state_plots/2020_06_02_date_smoothed_moving_window_21_days_countries_region_statsmodels',
+    Region.US_states: 'state_plots/2020_06_02_date_smoothed_moving_window_21_days_US_states_region_statsmodels',
+    Region.US_counties: 'state_plots/2020_06_02_date_smoothed_moving_window_21_days_US_counties_region_statsmodels'
+}
 
 for region, plot_subfolder in region_plot_subfolders.items():
     hyperparamater_str = os.path.basename(os.path.normpath(plot_subfolder))
     print(hyperparamater_str)
 
     data_dir = plot_subfolder
-    regions_to_present = [f for f in os.listdir(data_dir) if not os.path.isfile(os.path.join(data_dir, f))]
-    print(regions_to_present)
+
+    # only add regions with a valid directory and a figure to present inside
+    if opt_file_check:
+        regions_to_present = [f for f in os.listdir(data_dir) if not os.path.isfile(os.path.join(data_dir, f)) and \
+                              os.path.exists(os.path.join(data_dir, f, 'statsmodels_growth_rate_time_series.png')) and \
+                              os.path.exists(
+                                  os.path.join(data_dir, f, 'statsmodels_solutions_filled_quantiles.png')) and \
+                              os.path.exists(
+                                  os.path.join(data_dir, f, 'statsmodels_solutions_cumulative_filled_quantiles.png'))]
+    else:
+        regions_to_present = [f for f in os.listdir(data_dir) if not os.path.isfile(os.path.join(data_dir, f))]
+
+    print(sorted(regions_to_present))
 
     # Regenerate Figures
     generate_figure_browser.hyperparameter_str = hyperparamater_str + '/'
@@ -144,13 +212,61 @@ for region, plot_subfolder in region_plot_subfolders.items():
     generate_figure_browser.regions_to_present = regions_to_present
     generate_figure_browser.generate_plot_browser(regions_to_present)
 
+#####
+# Step 4: Update static_figures
+#####
+
+import os
+import shutil 
+date_str = yesterdays_date_str
+
+map_filename_to_github = {
+    os.path.join('state_plots',
+                 f'{date_str}_date_smoothed_moving_window_21_days_countries_region_statsmodels',
+                 'us',
+                 'statsmodels_solutions_filled_quantiles.png'
+                 ):
+        'statsmodels_solutions_filled_quantiles.png',
+    os.path.join('state_plots',
+                 f'{date_str}_date_smoothed_moving_window_21_days_countries_region_statsmodels',
+                 'us',
+                 'statsmodels_solutions_cumulative_filled_quantiles.png'
+                 ):
+        'statsmodels_solutions_cumulative_filled_quantiles.png',
+    os.path.join('state_plots',
+                 f'{date_str}_date_smoothed_moving_window_21_days_countries_region_statsmodels',
+                 'us',
+                 'statsmodels_growth_rate_time_series.png'
+                 ):
+        'statsmodels_growth_rate_time_series.png',
+    os.path.join('state_plots',
+                 f'{date_str}_date_smoothed_moving_window_21_days_countries_region_statsmodels',
+                 'simplified_boxplot_for_positive_slope_statsmodels.png'
+                 ):
+        'intl_simplified_boxplot_for_positive_slope_statsmodels.png',
+    os.path.join('state_plots',
+                 f'{date_str}_date_smoothed_moving_window_21_days_US_states_region_statsmodels',
+                 'simplified_boxplot_for_positive_slope_statsmodels.png'
+                 ):
+        'simplified_boxplot_for_positive_slope_statsmodels.png',
+}
+
+for in_file, out_file in map_filename_to_github.items():
+    out_file = os.path.join('static_figures', out_file)
+    print(f'Copying {in_file} to {out_file}...')
+    dest_filename = shutil.copyfile(in_file, out_file)
+
 ######
-# Step 6: Push to Github
+# Step 5: Push to Github
 ######
 
-# TODO: Update static_figures with most recent version
-# TODO: Update README.md to link to new CSV file
+# Make sure all the folders are in the github repo
+# git add source_data/csse_covid_19_daily_reports/*
+# git add plot_browser_moving_window_statsmodels_only_countries/*
+# git add plot_browser_moving_window_statsmodels_only_US_counties/*
+# git add plot_browser_moving_window_statsmodels_only_US_states/* 
+
 
 # Do this by hand
-# TODO: Figure out how to do this automatically instead of by hand
+# TODO: Figure out how to update git repo automatically instead of by hand
 print('Now add, commit, and push to Github!')
